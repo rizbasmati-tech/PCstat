@@ -488,11 +488,11 @@ $html = @"
 <body data-theme="light">
     <div class="container">
         <header>
-            <h1>💻 Computer Specifications</h1>
+            <h1>Computer Specifications</h1>
             <div class="header-info">
                 <div class="timestamp">Generated: $timestamp</div>
                 <div class="theme-toggle" id="themeToggle">
-                    <span id="themeIcon">🌙</span>
+                    <span id="themeIcon">&#9790;</span>
                     <span id="themeText">Dark Mode</span>
                 </div>
             </div>
@@ -501,7 +501,7 @@ $html = @"
         <div class="dashboard">
             <!-- CPU Card -->
             <div class="card">
-                <h2>🖥️ CPU</h2>
+                <h2>CPU</h2>
                 <div class="info-row">
                     <span class="label">Model</span>
                     <span class="value">$($cpu.Name)</span>
@@ -526,7 +526,7 @@ $html = @"
 
             <!-- RAM Card -->
             <div class="card">
-                <h2>🧠 Memory (RAM)</h2>
+                <h2>Memory (RAM)</h2>
                 <div class="info-row">
                     <span class="label">Total</span>
                     <span class="value">$($ram.Total)</span>
@@ -547,13 +547,13 @@ $html = @"
 
             <!-- GPU Card -->
             <div class="card">
-                <h2>🎮 Graphics (GPU)</h2>
+                <h2>Graphics (GPU)</h2>
 $gpuCardsHtml
             </div>
 
             <!-- Motherboard Card -->
             <div class="card">
-                <h2>⚙️ Motherboard</h2>
+                <h2>Motherboard</h2>
                 <div class="info-row">
                     <span class="label">Manufacturer</span>
                     <span class="value">$($motherboard.Manufacturer)</span>
@@ -570,13 +570,13 @@ $gpuCardsHtml
 
             <!-- Storage Card -->
             <div class="card">
-                <h2>💾 Storage Drives</h2>
+                <h2>Storage Drives</h2>
 $storageCardsHtml
             </div>
 
             <!-- Boot Time Card -->
             <div class="card">
-                <h2>⏱️ System Info</h2>
+                <h2>System Info</h2>
                 <div class="info-row">
                     <span class="label">Last Boot Time</span>
                     <span class="value">$($boot.LastBootTime)</span>
@@ -611,10 +611,10 @@ $storageCardsHtml
 
         function updateThemeUI(theme) {
             if (theme === 'dark') {
-                themeIcon.textContent = '☀️';
+                themeIcon.innerHTML = '&#9728;';
                 themeText.textContent = 'Light Mode';
             } else {
-                themeIcon.textContent = '🌙';
+                themeIcon.innerHTML = '&#9790;';
                 themeText.textContent = 'Dark Mode';
             }
         }
