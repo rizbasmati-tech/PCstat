@@ -1,0 +1,2 @@
+# PCstat
+get pc stats
