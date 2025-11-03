@@ -638,4 +638,3 @@ try {
 } catch {
     Write-Error "Failed to create or open HTML file: $_"
 }
-"@
