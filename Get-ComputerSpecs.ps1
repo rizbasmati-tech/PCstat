@@ -120,6 +120,29 @@ function Get-MotherboardInfo {
     }
 }
 
+function Get-SMARTAttributeName {
+    param([int]$Id)
+    $attributes = @{
+        1 = "Read Error Rate"
+        5 = "Reallocated Sectors Count"
+        9 = "Power-On Hours"
+        10 = "Spin Retry Count"
+        184 = "End-to-End Error"
+        187 = "Reported Uncorrectable Errors"
+        188 = "Command Timeout"
+        196 = "Reallocation Event Count"
+        197 = "Current Pending Sector Count"
+        198 = "Uncorrectable Sector Count"
+        199 = "UltraDMA CRC Error Count"
+        200 = "Write Error Rate"
+        201 = "Soft Read Error Rate"
+    }
+    if ($attributes.ContainsKey($Id)) {
+        return $attributes[$Id]
+    }
+    return "Unknown Attribute ($Id)"
+}
+
 function Get-StorageInfo {
     $isAdmin = Test-Administrator
     if (-not $isAdmin) {
@@ -158,24 +181,72 @@ function Get-StorageInfo {
             # Try to get SMART data
             $age = "N/A"
             $health = "Unknown"
+            $smartWarnings = @()
             if ($isAdmin) {
                 try {
                     $smartData = Get-CimInstance -Namespace root\wmi -ClassName MSStorageDriver_ATAPISmartData -ErrorAction SilentlyContinue |
                                 Where-Object { $_.InstanceName -match "_$diskNumber" }
 
                     if ($smartData -and $smartData.VendorSpecific) {
-                        # Parse SMART attributes (attribute 9 = power-on hours)
+                        # Parse SMART attributes
                         $vendorData = $smartData.VendorSpecific
+                        # Critical attributes to check for warnings
+                        $criticalAttributes = @(5, 10, 184, 187, 188, 196, 197, 198)
+
                         for ($i = 2; $i -lt $vendorData.Length - 5; $i += 12) {
                             $attrId = $vendorData[$i]
-                            if ($attrId -eq 9) {  # Power-on hours
-                                $rawValue = [BitConverter]::ToUInt32($vendorData[($i+5)..($i+8)], 0)
+                            if ($attrId -eq 0) { continue }  # Skip empty attributes
+
+                            $currentValue = $vendorData[$i+3]
+                            $worst = $vendorData[$i+4]
+                            $threshold = $vendorData[$i+2]
+                            $rawValue = [BitConverter]::ToUInt32($vendorData[($i+5)..($i+8)], 0)
+
+                            # Check for power-on hours (attribute 9)
+                            if ($attrId -eq 9) {
                                 $hours = $rawValue
                                 $days = [math]::Floor($hours / 24)
                                 $years = [math]::Floor($days / 365)
                                 $remainingDays = $days % 365
                                 $age = if ($years -gt 0) { "$years years, $remainingDays days" } else { "$days days" }
-                                break
+                            }
+
+                            # Check for warning conditions on critical attributes
+                            if ($criticalAttributes -contains $attrId) {
+                                $attrName = Get-SMARTAttributeName -Id $attrId
+                                $hasWarning = $false
+                                $warningReason = ""
+
+                                # Attribute 5, 196, 197, 198: Any non-zero raw value is a warning
+                                if ($attrId -in @(5, 196, 197, 198) -and $rawValue -gt 0) {
+                                    $hasWarning = $true
+                                    $warningReason = "Count: $rawValue (should be 0)"
+                                }
+                                # Attribute 10, 187, 188: Any non-zero raw value is concerning
+                                elseif ($attrId -in @(10, 187, 188) -and $rawValue -gt 0) {
+                                    $hasWarning = $true
+                                    $warningReason = "Count: $rawValue (should be 0)"
+                                }
+                                # Attribute 184: End-to-End errors
+                                elseif ($attrId -eq 184 -and $rawValue -gt 0) {
+                                    $hasWarning = $true
+                                    $warningReason = "Errors: $rawValue"
+                                }
+                                # Check if current value is below threshold
+                                elseif ($threshold -gt 0 -and $currentValue -le $threshold) {
+                                    $hasWarning = $true
+                                    $warningReason = "Value $currentValue <= Threshold $threshold"
+                                }
+
+                                if ($hasWarning) {
+                                    $smartWarnings += @{
+                                        Name = $attrName
+                                        Reason = $warningReason
+                                        Current = $currentValue
+                                        Worst = $worst
+                                        Threshold = $threshold
+                                    }
+                                }
                             }
                         }
                     }
@@ -184,7 +255,9 @@ function Get-StorageInfo {
                     $failPredict = Get-CimInstance -Namespace root\wmi -ClassName MSStorageDriver_FailurePredictStatus -ErrorAction SilentlyContinue |
                                   Where-Object { $_.InstanceName -match "_$diskNumber" }
                     if ($failPredict) {
-                        $health = if ($failPredict.PredictFailure) { "Warning" } else { "Healthy" }
+                        $health = if ($failPredict.PredictFailure -or $smartWarnings.Count -gt 0) { "Warning" } else { "Healthy" }
+                    } elseif ($smartWarnings.Count -gt 0) {
+                        $health = "Warning"
                     }
                 } catch {
                     # SMART data unavailable for this disk
@@ -200,6 +273,7 @@ function Get-StorageInfo {
                 UsagePercent = if ($disk.Size -gt 0) { [math]::Round(($usedSpace / $disk.Size) * 100, 1) } else { 0 }
                 Age = $age
                 Health = $health
+                SmartWarnings = $smartWarnings
             }
         }
 
@@ -252,12 +326,39 @@ foreach ($gpu in $gpus) {
 
 # Build Storage cards HTML
 $storageCardsHtml = ""
+$diskIndex = 0
 foreach ($disk in $storage) {
     $healthClass = switch ($disk.Health) {
         "Healthy" { "health-good" }
         "Warning" { "health-warning" }
         default { "health-unknown" }
     }
+
+    # Build SMART warnings HTML if any exist
+    $smartWarningsHtml = ""
+    if ($disk.SmartWarnings -and $disk.SmartWarnings.Count -gt 0) {
+        $smartWarningsHtml = @"
+                            <div class="smart-dropdown">
+                                <button class="smart-toggle" onclick="toggleSmartWarnings($diskIndex)">
+                                    SMART Warnings ($($disk.SmartWarnings.Count)) &#9660;
+                                </button>
+                                <div class="smart-content" id="smart-$diskIndex">
+"@
+        foreach ($warning in $disk.SmartWarnings) {
+            $smartWarningsHtml += @"
+                                    <div class="smart-warning-item">
+                                        <div class="smart-warning-name">$($warning.Name)</div>
+                                        <div class="smart-warning-detail">$($warning.Reason)</div>
+                                        <div class="smart-warning-values">Current: $($warning.Current) | Worst: $($warning.Worst) | Threshold: $($warning.Threshold)</div>
+                                    </div>
+"@
+        }
+        $smartWarningsHtml += @"
+                                </div>
+                            </div>
+"@
+    }
+
     $storageCardsHtml += @"
                     <div class="storage-item">
                         <div class="info-row">
@@ -288,8 +389,10 @@ foreach ($disk in $storage) {
                             <span class="label">Health</span>
                             <span class="value $healthClass">$($disk.Health)</span>
                         </div>
+$smartWarningsHtml
                     </div>
 "@
+    $diskIndex++
 }
 
 $html = @"
@@ -475,6 +578,70 @@ $html = @"
         .health-warning { color: var(--health-warning) !important; font-weight: 600; }
         .health-unknown { color: var(--health-unknown) !important; }
 
+        .smart-dropdown {
+            margin-top: 15px;
+        }
+
+        .smart-toggle {
+            width: 100%;
+            padding: 10px 15px;
+            background: var(--accent);
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            font-weight: 600;
+            text-align: left;
+            transition: all 0.3s ease;
+        }
+
+        .smart-toggle:hover {
+            opacity: 0.9;
+            transform: translateY(-1px);
+        }
+
+        .smart-content {
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.3s ease;
+            margin-top: 10px;
+        }
+
+        .smart-content.open {
+            max-height: 500px;
+        }
+
+        .smart-warning-item {
+            background: var(--bg-primary);
+            padding: 12px;
+            margin-bottom: 10px;
+            border-radius: 6px;
+            border-left: 3px solid var(--health-warning);
+        }
+
+        .smart-warning-item:last-child {
+            margin-bottom: 0;
+        }
+
+        .smart-warning-name {
+            font-weight: 600;
+            color: var(--health-warning);
+            margin-bottom: 5px;
+        }
+
+        .smart-warning-detail {
+            color: var(--text-primary);
+            margin-bottom: 5px;
+            font-size: 0.9rem;
+        }
+
+        .smart-warning-values {
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+            font-family: 'Courier New', monospace;
+        }
+
         @media (max-width: 768px) {
             .dashboard {
                 grid-template-columns: 1fr;
@@ -616,6 +783,20 @@ $storageCardsHtml
             } else {
                 themeIcon.innerHTML = '&#9790;';
                 themeText.textContent = 'Dark Mode';
+            }
+        }
+
+        // SMART warnings dropdown toggle
+        function toggleSmartWarnings(diskIndex) {
+            const content = document.getElementById('smart-' + diskIndex);
+            const button = content.previousElementSibling;
+
+            if (content.classList.contains('open')) {
+                content.classList.remove('open');
+                button.innerHTML = button.innerHTML.replace('&#9650;', '&#9660;');
+            } else {
+                content.classList.add('open');
+                button.innerHTML = button.innerHTML.replace('&#9660;', '&#9650;');
             }
         }
     </script>
